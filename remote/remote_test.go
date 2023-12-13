@@ -171,6 +171,40 @@ func TestWeird(t *testing.T) {
 	wg.Wait()     // wait for the actor to stop.
 }
 
+func TestMessageTimeout(t *testing.T) {
+	aAddr := getRandomLocalhostAddr()
+	a, ra, err := makeRemoteEngine(aAddr)
+	assert.NoError(t, err)
+	bAddr := getRandomLocalhostAddr()
+	b, rb, err := makeRemoteEngine(bAddr)
+	assert.NoError(t, err)
+	successCh := make(chan struct{})
+	failCh := make(chan struct{})
+	pid := a.SpawnFunc(func(c *actor.Context) {
+		switch msg := c.Message().(type) {
+		case actor.Started:
+			c.Engine().Subscribe(c.PID())
+		case *TestMessage:
+			close(failCh)
+		case actor.DeadLetterEvent:
+			close(successCh)
+		default: // debug mostly
+			fmt.Printf("received unexpected message: %T\n", msg)
+		}
+
+	}, "dfoo")
+	ra.Stop().Wait() // stop the remote, so the messages will timeout.
+	b.Send(pid, &TestMessage{Data: []byte("foo")})
+	select {
+	case <-successCh:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timeout - test failed")
+	}
+	a.Poison(pid).Wait()
+	ra.Stop()
+	rb.Stop()
+}
+
 func makeRemoteEngine(listenAddr string) (*actor.Engine, *Remote, error) {
 	var e *actor.Engine
 	r := New(Config{ListenAddr: listenAddr})
